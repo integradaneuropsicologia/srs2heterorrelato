@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>SRS-2 — Heterorrelato</title>
+<style>
+  :root{
+    --bg:#0e1625; --card:#14213b; --line:#2b3f66;
+    --text:#f8fafc; --muted:#cbd5e1;
+    --pri:#6d28d9; --ok:#10b981; --err:#ef4444; --warn:#f59e0b;
+    --chip:#0b1220;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;background:var(--bg);color:var(--text);
+    font:16px/1.55 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu;
+    -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
+  }
+  .wrap{max-width:980px;margin:20px auto;padding:0 16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px}
+  h1{margin:0 0 6px;font-size:1.45rem}
+  .muted{color:var(--muted)}
+
+  .grid-info{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 0 6px}
+  @media (max-width:720px){.grid-info{grid-template-columns:1fr}}
+  .info{background:rgba(0,0,0,.18);border:1px solid var(--line);border-radius:12px;padding:12px}
+  .info b{display:block;margin-bottom:4px;color:#e2e8f0}
+
+  .q{border:1px solid var(--line);border-radius:12px;padding:12px;background:rgba(0,0,0,.18);margin-bottom:12px}
+  .q h3{margin:0 0 10px;font-size:1.02rem}
+  .opts{display:flex;flex-wrap:wrap;gap:10px}
+  .opt{
+    display:flex;align-items:center;gap:10px;
+    padding:12px 14px;border:1px solid var(--line);border-radius:12px;
+    background:var(--chip); cursor:pointer; min-width:220px;
+    transition:transform .05s ease, border-color .15s ease;
+  }
+  .opt:hover{border-color:#4466aa; transform:translateY(-1px)}
+  .opt input[type="radio"]{transform:scale(1.15)}
+  @media (max-width:520px){ .opt{min-width:unset; flex:1 1 100%} }
+
+  .btn{display:inline-flex;align-items:center;gap:10px;background:var(--pri);border:none;color:#fff;padding:12px 16px;border-radius:12px;cursor:pointer;font-weight:600}
+  .btn.ok{background:var(--ok)}
+  .btn:disabled{opacity:.6;cursor:not-allowed}
+  .msg{margin:12px 0;padding:12px;border-radius:10px}
+  .okbox{background:#06351f;border:1px solid #0e6c45;color:#c8ffe3}
+  .errbox{background:#3b0d0d;border:1px solid #7f1d1d;color:#ffd5d5}
+  .warnbox{background:#3a2903;border:1px solid #885e09;color:#ffe6b0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h1>SRS-2 — Questionário (Heterorrelato)</h1>
+    <p class="muted">
+      Responda pensando na pessoa avaliada. As opções são:
+      <em>Não é verdade (1)</em>, <em>Algumas vezes é verdade (2)</em>,
+      <em>Muitas vezes é verdade (3)</em>, <em>Quase sempre é verdade (4)</em>.
+    </p>
+
+    <!-- Cabeçalho: só nome e telefone -->
+    <div id="pacInfo" class="grid-info" style="display:none;"></div>
+
+    <form id="form" style="margin-top:14px; display:none;">
+      <div id="qs"></div>
+      <div style="margin-top:14px">
+        <button id="btnSubmit" class="btn ok" type="submit">Enviar respostas</button>
+      </div>
+      <div id="msg" class="msg" style="display:none"></div>
+    </form>
+
+    <div id="alert" class="msg" style="display:none"></div>
+  </div>
+</div>
+
+<script>
+/* ===== CONFIG ===== */
+const SHEETDB_BASE = "https://sheetdb.io/api/v1/8pmdh33s9fvy8";
+const SHEETS = { PATIENTS:"Patients", TOKENS:"LinkTokens", SCORES:"Scores_SRS2" };
+const CODE = "SRS2";
+const PORTAL_URL = "https://integradaneuropsicologia.github.io/formularios/";
+
+/* Liberação (coluna na Patients) */
+const RELEASE_KEYS = ["SRS2_HETERORRELATO"];
+
+/* ===== HELPERS ===== */
+const $ = s => document.querySelector(s);
+const onlyDigits = s => (s||"").replace(/\D+/g,"");
+const qs = k => new URLSearchParams(location.search).get(k) || "";
+function setBox(id, text, kind="ok"){
+  const el = $(id); if(!el) return;
+  el.textContent = text;
+  el.className = "msg " + (kind==="ok"?"okbox":kind==="warn"?"warnbox":"errbox");
+  el.style.display = "block";
+}
+function hideBox(id){ const el=$(id); if(el){ el.style.display="none"; el.textContent=""; } }
+function maskPhone(input){
+  const d = onlyDigits(input||"");
+  if(!d) return "-";
+  let num = d.startsWith("55") ? d.slice(2) : d;
+  if(num.length===10) return `(${num.slice(0,2)}) ${num.slice(2,6)}-${num.slice(6)}`;
+  if(num.length>=11) return `(${num.slice(0,2)}) ${num.slice(2,3)} ${num.slice(3,7)}-${num.slice(7,11)}`;
+  return input;
+}
+async function GET(url){ const r=await fetch(url); if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); }
+async function sheetSearch(sheet, params){
+  const usp = new URLSearchParams(params);
+  return GET(`${SHEETDB_BASE}/search?sheet=${encodeURIComponent(sheet)}&${usp.toString()}`);
+}
+async function sheetCreate(sheet, row){
+  const r = await fetch(`${SHEETDB_BASE}?sheet=${encodeURIComponent(sheet)}`, {
+    method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ data:[row] })
+  });
+  if(!r.ok) throw new Error(await r.text()); return r.json();
+}
+async function sheetPatchBy(sheet, column, value, data){
+  const r = await fetch(`${SHEETDB_BASE}/${encodeURIComponent(column)}/${encodeURIComponent(value)}?sheet=${encodeURIComponent(sheet)}`, {
+    method:"PATCH", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ data })
+  });
+  if(!r.ok) throw new Error(await r.text()); return r.json();
+}
+function goPortalWithToken(){
+  const TOKEN = qs("token");
+  try{
+    const u = new URL(PORTAL_URL, location.href);
+    u.searchParams.set("token", TOKEN);
+    location.href = u.toString();
+  }catch(_){
+    const sep = PORTAL_URL.includes("?") ? "&" : "?";
+    location.href = PORTAL_URL + sep + "token=" + encodeURIComponent(TOKEN);
+  }
+}
+
+/* ===== ITENS / OPÇÕES ===== */
+const ITEMS = [
+"Parece muito mais desconfortável em situações sociais do que quando está sozinha.",
+"As expressões em seu rosto não combinam com o que está dizendo.",
+"Parece confiante (ou segura) quando está interagindo com outras pessoas.",
+"Quando há sobrecarga de estímulos, apresenta padrões rígidos e inflexíveis de comportamento, frequentemente estranhos.",
+"Não percebe quando os outros estão tentando tirar vantagem dela.",
+"Prefere estar sozinha do que com os outros.",
+"Demonstra perceber o que os outros estão pensando ou sentindo.",
+"Se comporta de maneira estranha ou bizarra.",
+"Precisa da ajuda de outras pessoas para satisfazer suas necessidades básicas.",
+"Leva as coisas muito \"ao pé da letra\" e não compreende o real significado de uma conversa.",
+"É autoconfiante.",
+"É capaz de comunicar seus sentimentos para as outras pessoas.",
+"É estranha na \"tomada de vez\" das interações com seus colegas (por exemplo, não parece entender a reciprocidade de uma conversa).",
+"Não tem boa coordenação.",
+"Reconhece e responde de forma apropriada às mudanças no tom de voz e expressões faciais dos outros.",
+"Evita o contato visual ou tem contato visual diferente.",
+"Reconhece quando algo é injusto.",
+"Tem dificuldade em fazer amigos, mesmo tentando dar o melhor de si.",
+"Fica frustrada tentando expressar suas ideias em uma conversa.",
+"Mostra interesses sensoriais incomuns (por exemplo, cheirar seus dedos com frequência) ou estranhos, como chacoalhar repetidamente pequenos itens.",
+"É capaz de imitar ações e comportamento de outras pessoas quando é socialmente apropriado fazê-lo.",
+"Interage apropriadamente com outros adultos.",
+"Não participa de atividades em grupo e eventos sociais a menos que seja convidada a fazê-lo.",
+"Tem mais dificuldade do que outras pessoas com mudanças em sua rotina.",
+"Não parece se importar em estar fora de sintonia ou em um \"mundo\" diferentes dos outros.",
+"Oferece conforto para os outros quando estão tristes.",
+"Evita iniciar interações sociais com outros adultos.",
+"Pensa ou fala sobre a mesma coisa repetidamente.",
+"É considerada estranha ou esquisita pelas outras pessoas.",
+"Fica perturbada em uma situação com muitas coisas acontecendo.",
+"Não consegue tirar algo da sua mente uma vez que começa a pensar sobre isso.",
+"Tem boa higiene pessoal.",
+"É socialmente desajeitada, mesmo quando tenta ser educada.",
+"Evita pessoas que querem se aproximar dela por meio de contato afetivo.",
+"Tem dificuldade em acompanhar o fluxo de uma conversa normal.",
+"Tem dificuldade em se relacionar com os membros da família.",
+"Tem dificuldade em se relacionar com adultos.",
+"Responde adequadamente às mudanças de humor das outras pessoas (por exemplo, quando o humor de um amigo muda de feliz para triste).",
+"Tem uma variedade de interesses extraordinariamente incomuns.",
+"É imaginativa sem perder contato com a realidade.",
+"Muda de uma atividade para outra sem objetivo aparente.",
+"Parece excessivamente sensível aos sons, texturas ou cheiros.",
+"Gosta de se mostrar \"boa de conversa\" (conversa informal com os outros).",
+"Não entende como os acontecimentos estão relacionados entre si (causa e efeito), da mesma forma que outros adultos.",
+"Geralmente fica interessada no que as pessoas próximas estão prestando atenção.",
+"Tem expressão facial excessivamente séria.",
+"Ri em momentos inapropriados.",
+"Tem senso de humor e entende as piadas.",
+"É extremamente hábil em tarefas intelectuais ou computacionais, mas não consegue fazer tão bem a maioria das outras tarefas.",
+"Tem comportamentos estranhos e repetitivos.",
+"Tem dificuldade em responder perguntas diretamente e acaba falando em torno do assunto.",
+"Sabe quando está falando muito alto ou fazendo muito barulho.",
+"Fala com as pessoas com um tom de voz incomum (por exemplo, fala como um robô ou como se estivesse dando uma palestra).",
+"Parece agir com as pessoas como se elas fossem objetos.",
+"Sabe quando está muito próxima ou invadindo o espaço de alguém.",
+"Caminha entre duas pessoas que estão conversando.",
+"Isolada; tende a não deixar sua casa.",
+"Concentra-se demais em partes das coisas ao invés de ver o todo.",
+"É excessivamente desconfiada.",
+"É emocionalmente distante, não demonstrando seus sentimentos.",
+"É inflexível e tem dificuldade para mudar de ideia.",
+"Dá explicações incomuns ou ilógicas do porquê de fazer as coisas.",
+"Toca ou cumprimenta os outros de uma maneira incomum.",
+"Fica muito agitada em situações sociais.",
+"Fica com olhar perdido ou olha fixamente para o nada."
+];
+const CHOICES = [
+  {label:"Não é verdade", value:0},
+  {label:"Algumas vezes é verdade", value:1},
+  {label:"Muitas vezes é verdade", value:2},
+  {label:"Quase sempre é verdade", value:3},
+];
+function renderQuestions(){
+  const host = $("#qs"); host.innerHTML="";
+  ITEMS.forEach((text, idx)=>{
+    const qn = String(idx+1).padStart(2,"0");
+    const wrap = document.createElement("div");
+    wrap.className="q";
+    wrap.innerHTML = `<h3>${idx+1}. ${text}</h3>`;
+    const opts = document.createElement("div"); opts.className="opts";
+    CHOICES.forEach(c=>{
+      const id=`q${qn}_${c.value}`;
+      const lab=document.createElement("label"); lab.className="opt";
+      lab.innerHTML = `<input type="radio" name="q${qn}" id="${id}" value="${c.value}" required><span>${c.label}</span>`;
+      opts.appendChild(lab);
+    });
+    wrap.appendChild(opts); host.appendChild(wrap);
+  });
+}
+
+/* ===== ESTADO ===== */
+let patient=null, tokenRow=null, CPF="";
+
+/* ===== BOOT ===== */
+(async function boot(){
+  try{
+    const TOKEN = qs("token");
+    if(!TOKEN){ setBox("#alert","Link inválido (sem token). Solicite um novo link.","err"); return; }
+
+    const trows = await sheetSearch(SHEETS.TOKENS, { token: TOKEN });
+    if(!trows || !trows.length) throw new Error("Token inválido ou expirado.");
+    tokenRow = trows[0];
+    if(String(tokenRow.disabled||"não").toLowerCase()==="sim") throw new Error("Token desativado. Peça um novo link.");
+    if(tokenRow.expires_at && new Date(tokenRow.expires_at) < new Date()) throw new Error("Token expirado. Peça um novo link.");
+    CPF = onlyDigits(tokenRow.cpf||"");
+    if(!CPF) throw new Error("Token sem CPF vinculado.");
+
+    const prows = await sheetSearch(SHEETS.PATIENTS, { cpf: CPF });
+    if(!prows || !prows.length) throw new Error("Paciente não encontrado.");
+    patient = prows[0];
+
+    const isAllowed = RELEASE_KEYS.some(k => String(patient[k]||"").trim().toLowerCase()==="sim");
+    if(!isAllowed){ setBox("#alert","Este formulário não está liberado para esta pessoa.","err"); return; }
+
+    const doneKeys = RELEASE_KEYS.map(k => `${k}_FEITO`);
+    const anyDoneFlag = doneKeys.some(k => String(patient[k]||"").trim().toLowerCase()==="sim");
+    const already = await sheetSearch(SHEETS.SCORES, { cpf: CPF, code: CODE, source:"heterorrelato" });
+    if(anyDoneFlag || (already && already.length)){
+      setBox("#alert","Este formulário já foi respondido. Voltando ao portal…","ok");
+      setTimeout(goPortalWithToken, 1200);
+      return;
+    }
+
+    renderPatientInfo();
+    renderQuestions();
+    $("#pacInfo").style.display = "grid";
+    $("#form").style.display = "block";
+    hideBox("#alert");
+
+  }catch(err){
+    console.error(err);
+    setBox("#alert", err.message || "Falha ao abrir o formulário. Tente novamente mais tarde.", "err");
+  }
+})();
+
+function renderPatientInfo(){
+  const g = $("#pacInfo"); g.innerHTML="";
+  const info = [
+    ["Nome", patient.nome || "-"],
+    ["WhatsApp", maskPhone(patient.whatsapp)]
+  ];
+  for(const [k,v] of info){
+    const div = document.createElement("div");
+    div.className = "info";
+    div.innerHTML = `<b>${k}</b><div>${v||"-"}</div>`;
+    g.appendChild(div);
+  }
+}
+
+/* ===== SUBESCALAS & CÁLCULOS ===== */
+const SUBS = {
+  percepcao_social: [2,7,25,32,45,52,54,56],
+  cognicao_social: [5,10,15,17,30,40,42,44,48,58,59,62],
+  comunicacao_social_subescala: [12,13,16,18,19,21,22,26,33,35,36,37,38,41,46,47,51,53,55,57,60,61],
+  motivacao_social: [1,3,6,9,11,23,27,34,43,64,65],
+  rrb: [4,8,14,20,24,28,29,31,39,49,50,63] // padrões restritivos e repetitivos
+};
+/* Itens com pontuação invertida (0↔3, 1↔2) — iguais ao autorrelato */
+const REVERSE_ITEMS = new Set([3,7,11,12,15,17,21,22,26,32,38,40,43,45,48,52,55]);
+
+function scoreValue(qIndex, rawValue){
+  return REVERSE_ITEMS.has(qIndex) ? (3 - rawValue) : rawValue;
+}
+function sumBy(arr, answers){ return arr.reduce((s,i)=> s + (answers[i] ?? 0), 0); }
+
+/* ===== SUBMIT ===== */
+let sending=false;
+$("#form").addEventListener("submit", async (e)=>{
+  e.preventDefault();
+  if(sending) return;
+  sending = true;
+  hideBox("#msg");
+
+  const btn = $("#btnSubmit");
+  const originalText = btn.textContent;
+  btn.disabled = true; btn.textContent = "Enviando…";
+
+  try{
+    if(!patient) throw new Error("Sessão inválida. Recarregue o link.");
+
+    // respostas 1..65 (aplicando inversão quando necessário)
+    const ans = {};
+    for(let i=1;i<=65;i++){
+      const qn = String(i).padStart(2,"0");
+      const sel = document.querySelector(`input[name="q${qn}"]:checked`);
+      if(!sel){ throw new Error(`Responda a questão ${i}.`); }
+      const raw = Number(sel.value);
+      ans[i] = scoreValue(i, raw);
+    }
+
+    // totais
+    const total_1a65 = Array.from({length:65},(_,k)=>k+1).reduce((s,i)=> s + ans[i], 0);
+    const rrb = sumBy(SUBS.rrb, ans);
+    const comunicacao_interacao = total_1a65 - rrb; // soma 1..65 menos RRB
+
+    const resultado = {
+      percepcao_social:   sumBy(SUBS.percepcao_social, ans),
+      cognicao_social:    sumBy(SUBS.cognicao_social, ans),
+      comunicacao_social_subescala: sumBy(SUBS.comunicacao_social_subescala, ans),
+      motivacao_social:   sumBy(SUBS.motivacao_social, ans),
+      padroes_restritivos_repetitivos: rrb,
+      comunicacao_interacao,
+      total: total_1a65
+    };
+
+    const categoria_csv = Object.entries(resultado).map(([k,v])=>`${k}=${v}`).join(",");
+
+    await sheetCreate(SHEETS.SCORES, {
+      result_id: `${patient.cpf}_${CODE}_${Date.now()}`,
+      token: qs("token"),
+      cpf: patient.cpf,
+      code: CODE,
+      source: "heterorrelato",
+      submitted_at: new Date().toISOString(),
+      total: resultado.total,
+      categoria: categoria_csv
+    });
+
+    // marca como FEITO para a(s) chave(s) de liberação correspondentes
+    const doneUpdates = {};
+    RELEASE_KEYS.map(k=>`${k}_FEITO`).forEach(k=>{ doneUpdates[k] = "sim"; });
+    await sheetPatchBy(SHEETS.PATIENTS, "cpf", patient.cpf, doneUpdates);
+
+    setBox("#msg","Formulário enviado. Voltando ao portal…","ok");
+    setTimeout(goPortalWithToken, 1100);
+
+  }catch(err){
+    console.error(err);
+    setBox("#msg", err.message || "Falha ao enviar. Tente novamente.", "err");
+    sending = false;
+    btn.disabled = false; btn.textContent = originalText;
+  }
+});
+</script>
+</body>
+</html>
